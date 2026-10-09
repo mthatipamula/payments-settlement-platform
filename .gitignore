@@ -1,0 +1,14 @@
+.gradle/
+build/
+bin/
+out/
+.idea/
+*.iml
+.vscode/
+.DS_Store
+.env
+node_modules/
+frontend/dist/
+.run/
+.claude/
+deploy/gcp/secrets.env

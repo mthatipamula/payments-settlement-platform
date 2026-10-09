@@ -1,0 +1,95 @@
+server:
+  port: ${PORT:8080}
+  forward-headers-strategy: framework
+  shutdown: graceful
+
+spring:
+  application:
+    name: paysettle
+  datasource:
+    url: ${DB_URL:jdbc:postgresql://localhost:5435/paysettle}
+    username: ${DB_USER:paysettle}
+    password: ${DB_PASSWORD:paysettle}
+    hikari:
+      maximum-pool-size: ${DB_POOL_SIZE:10}
+      connection-timeout: 5000
+  flyway:
+    enabled: true
+  batch:
+    jdbc:
+      initialize-schema: always
+    job:
+      enabled: false          # jobs are launched by the API / scheduler, never at startup
+  servlet:
+    multipart:
+      max-file-size: 50MB
+      max-request-size: 50MB
+  security:
+    oauth2:
+      resourceserver:
+        jwt:
+          issuer-uri: ${JWT_ISSUER_URI:}
+
+paysettle:
+  institution:
+    name: ${INSTITUTION_NAME:PaySettle Bank}
+    # Our ABA routing number (ODFI for ACH, Fedwire participant). 123456780 is a valid-checksum test value.
+    routing-number: ${INSTITUTION_ROUTING:123456780}
+    fed-ach-routing: ${FED_ACH_ROUTING:011000015}
+  security:
+    # api-key: X-API-Key header (local, service-to-service). jwt: OAuth2 bearer tokens (production SSO).
+    mode: ${SECURITY_MODE:api-key}
+    operator-api-key: ${OPERATOR_API_KEY:local-operator-key}
+    analyst-api-key: ${ANALYST_API_KEY:local-analyst-key}
+  crypto:
+    # 32-byte keys, base64. Local defaults only; production values come from Secret Manager.
+    data-key: ${DATA_KEY:bG9jYWwtZGV2LWRhdGEta2V5LTMyLWJ5dGVzLSEhISE=}
+    fingerprint-key: ${FINGERPRINT_KEY:bG9jYWwtZGV2LWZpbmdlcnByaW50LWtleS0zMmJ5dGU=}
+  ach:
+    timezone: America/New_York
+    # Same Day ACH per-payment limit set by Nacha ($1,000,000 since March 2022).
+    same-day-limit-cents: 100000000
+    # FedACH windows: our submission cutoff and the settlement time (Eastern). Same-day windows settle today;
+    # the end-of-day NEXT_DAY file settles at 8:30 on the next business day.
+    windows:
+      - { name: SAME_DAY_1, cutoff: "10:30", settlement: "13:00", same-day: true }
+      - { name: SAME_DAY_2, cutoff: "14:45", settlement: "17:00", same-day: true }
+      - { name: SAME_DAY_3, cutoff: "16:45", settlement: "18:00", same-day: true }
+      - { name: NEXT_DAY,   cutoff: "20:00", settlement: "08:30", same-day: false }
+  wire:
+    timezone: America/New_York
+    # Fedwire Funds customer transfer cutoff (Eastern); wires after this are flagged and settle next business day.
+    customer-cutoff: "18:00"
+    duplicate-window-minutes: 30
+  fraud:
+    review-score: 50
+    block-score: 85
+    ach-high-amount-cents: 2500000       # $25,000
+    wire-high-amount: 250000.00
+    velocity-window-minutes: 60
+    ach-velocity-limit: 20               # entries to the same receiver account per window
+    wire-velocity-limit: 5               # wires from the same debtor account per window
+    sanctions-match-threshold: 0.92      # Jaro-Winkler similarity
+  settlement:
+    sweep-enabled: ${SETTLEMENT_SWEEP_ENABLED:true}
+    sweep-interval-ms: 5000
+  simulator:
+    # Local demo traffic generator endpoint (/api/v1/simulator/**). Never enable in production.
+    enabled: ${SIMULATOR_ENABLED:false}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus,metrics
+  endpoint:
+    health:
+      probes:
+        enabled: true
+  metrics:
+    tags:
+      application: paysettle
+
+logging:
+  level:
+    io.paysettle: INFO

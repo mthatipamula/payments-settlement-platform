@@ -1,0 +1,9 @@
+.git
+.gradle
+.run
+.claude
+**/build
+frontend/node_modules
+frontend/dist
+.env
+deploy/gcp/secrets.env

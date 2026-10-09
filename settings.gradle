@@ -1,0 +1,2 @@
+rootProject.name = 'payments-settlement-platform'
+include 'backend'
