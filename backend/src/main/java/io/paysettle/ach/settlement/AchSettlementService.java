@@ -153,13 +153,57 @@ public class AchSettlementService {
                 .param("s", settlementId).param("ids", ids).update();
 
         String ack = gateway.transmit(fileName, content);
-        jdbc.sql("UPDATE ach_settlement_batches SET status = 'ACKNOWLEDGED', network_reference = :ack, transmitted_at = now() WHERE id = :id")
-                .param("ack", ack).param("id", settlementId).update();
+        String batchStatus = gateway.acknowledgesOnTransmit() ? "ACKNOWLEDGED" : "TRANSMITTED";
+        jdbc.sql("UPDATE ach_settlement_batches SET status = :st, network_reference = :ack, transmitted_at = now() WHERE id = :id")
+                .param("st", batchStatus).param("ack", ack).param("id", settlementId).update();
         for (UUID id : ids) {
             audit.record(Rail.ACH, id, "ACCEPTED", "SENT", "ach-settlement-job", w.name() + " " + ack);
         }
         log.info("ACH {} window: {} entries, debits {} credits {} -> {}", w.name(), rows.size(), debits, credits, ack);
-        return Optional.of(new Result(settlementId, w.name(), settlementDate, rows.size(), debits, credits, ack, "ACKNOWLEDGED"));
+        return Optional.of(new Result(settlementId, w.name(), settlementDate, rows.size(), debits, credits, ack, batchStatus));
+    }
+
+    /**
+     * Records the operator's asynchronous answer for an outbound file (FedLine). Accepted: TRANSMITTED ->
+     * ACKNOWLEDGED, so the batch settles at its window's settlement time. Rejected: the batch FAILS and its
+     * entries go back to ACCEPTED so operations can fix the cause; they are picked up by the next window.
+     * Returns false when no transmitted batch matches the file name (unknown or already answered).
+     */
+    @Transactional
+    public boolean acknowledge(String fileName, boolean accepted, String reference, String reason) {
+        Optional<UUID> batch = jdbc.sql("""
+                SELECT s.id FROM ach_settlement_batches s JOIN ach_files f ON f.id = s.outbound_file_id
+                WHERE f.file_name = :name AND f.direction = 'OUTBOUND' AND s.status = 'TRANSMITTED'
+                FOR UPDATE OF s""").param("name", fileName).query(UUID.class).optional();
+        if (batch.isEmpty()) {
+            return false;
+        }
+        UUID id = batch.get();
+        if (accepted) {
+            jdbc.sql("UPDATE ach_settlement_batches SET status = 'ACKNOWLEDGED', network_reference = :ref, status_reason = NULL WHERE id = :id")
+                    .param("ref", reference).param("id", id).update();
+            log.info("FedACH acknowledged {} ({})", fileName, reference);
+            return true;
+        }
+        jdbc.sql("UPDATE ach_settlement_batches SET status = 'FAILED', status_reason = :r WHERE id = :id")
+                .param("r", reason).param("id", id).update();
+        List<UUID> entries = jdbc.sql("SELECT id FROM ach_entries WHERE settlement_batch_id = :id AND status = 'SENT'")
+                .param("id", id).query(UUID.class).list();
+        if (!entries.isEmpty()) {
+            jdbc.sql("UPDATE ach_entries SET status = 'ACCEPTED', settlement_batch_id = NULL, updated_at = now() WHERE id IN (:ids)")
+                    .param("ids", entries).update();
+        }
+        entries.forEach(e -> audit.record(Rail.ACH, e, "SENT", "ACCEPTED", "fedline-ack", "FedACH rejected " + fileName + ": " + reason));
+        log.error("FedACH REJECTED {}: {} ({} entries returned to ACCEPTED)", fileName, reason, entries.size());
+        return true;
+    }
+
+    /** Transmitted files still waiting for the operator's acknowledgement after the given number of minutes. */
+    public List<String> overdueAcknowledgements(int minutes) {
+        return jdbc.sql("""
+                SELECT f.file_name FROM ach_settlement_batches s JOIN ach_files f ON f.id = s.outbound_file_id
+                WHERE s.status = 'TRANSMITTED' AND s.transmitted_at < now() - make_interval(mins => :m)""")
+                .param("m", minutes).query(String.class).list();
     }
 
     /** Marks transmitted batches SETTLED once their window's settlement time has passed (or immediately when forced). */
@@ -210,7 +254,7 @@ public class AchSettlementService {
     public List<Map<String, Object>> recentBatches() {
         return jdbc.sql("""
                 SELECT s.id, s.network, s.settlement_window, s.settlement_date, s.entry_count, s.total_debit_cents,
-                       s.total_credit_cents, s.net_cents, s.status, s.network_reference, s.created_at, s.transmitted_at,
+                       s.total_credit_cents, s.net_cents, s.status, s.status_reason, s.network_reference, s.created_at, s.transmitted_at,
                        s.settled_at, f.file_name
                 FROM ach_settlement_batches s LEFT JOIN ach_files f ON f.id = s.outbound_file_id
                 ORDER BY s.created_at DESC LIMIT 100""").query().listOfRows();

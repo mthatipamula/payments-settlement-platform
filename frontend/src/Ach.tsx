@@ -154,7 +154,7 @@ function Settlement({ canOperate }: { canOperate: boolean }) {
         <tbody>{data?.map((b) => (
           <tr key={b.id}><td className="nowrap">{time(b.created_at)}</td><td>{b.settlement_window}</td><td>{b.settlement_date}</td><td className="r">{num(b.entry_count)}</td>
             <td className="r">{cents(b.total_debit_cents)}</td><td className="r">{cents(b.total_credit_cents)}</td><td className="r"><b>{cents(b.net_cents)}</b></td>
-            <td>{b.file_name}</td><td className="mono small">{b.network_reference}</td><td><Status s={b.status} /></td><td className="nowrap">{time(b.settled_at)}</td></tr>
+            <td>{b.file_name}</td><td className="mono small">{b.network_reference}</td><td><Status s={b.status} />{b.status_reason && <div className="small bad-text">{b.status_reason}</div>}</td><td className="nowrap">{time(b.settled_at)}</td></tr>
         ))}</tbody>
       </table></div>
       {data?.length === 0 && <p className="muted">No settlement batches yet.</p>}

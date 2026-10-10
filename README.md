@@ -85,6 +85,33 @@ later. Each rail has its own tables, jobs and gateway interface.
    - `completeSettlement` marks the batch SETTLED at the window's settlement time.
    - Weekends are skipped. The in-app scheduler (ShedLock) and Cloud Scheduler both call the sweep.
 
+### FedACH connectivity (FedLine)
+
+FedLine is not a public API. It is the Federal Reserve's private connection for banks with a Fed account:
+Fed-supplied VPN devices and Fed-issued certificates, set up through the Fed's onboarding and certification
+tests. Banks exchange ACH files over FedLine Direct with managed file transfer software such as IBM Sterling
+Connect:Direct. The `FedAchGateway` interface hides this, and there are two implementations:
+
+| Gateway | When | Behavior |
+|---|---|---|
+| `SimulatedFedAchGateway` | default (`FEDLINE_ENABLED=false`) | Checks the file the way the Fed would and acknowledges it at once |
+| `FedLineAchGateway` (skeleton) | `FEDLINE_ENABLED=true` | Writes the file to `FEDLINE_OUTBOUND_DIR` (temporary name, then an atomic rename, so the transfer software never picks up a half-written file) and returns. The batch stays **TRANSMITTED** |
+
+`FedLineAckPoller` reads the Fed's acknowledgements from `FEDLINE_ACK_DIR` and archives each one to
+`FEDLINE_ARCHIVE_DIR`:
+- **Accepted:** the batch becomes ACKNOWLEDGED and settles at the window's settlement time. A batch is
+  never settled without an acknowledgement.
+- **Rejected:** the batch becomes FAILED with the reason. Its entries return to ACCEPTED and go out in
+  the next window.
+- **Unknown or unreadable:** the file is set aside for operations to look at.
+- **No acknowledgement after `ack-timeout-minutes`:** a warning is logged so operations can chase it
+  before the settlement time.
+
+The acknowledgement format in the skeleton is a placeholder (`FILE=`, `STATUS=`, `REFERENCE=`, `REASON=`).
+The Fed specifies the real one during onboarding, and only `FedLineAckPoller.parse` changes for it. FedLine
+needs persistent shared directories, so it runs on-premises or on GKE with a mounted volume, not on Cloud
+Run. The demo deployment uses the simulator.
+
 ### Wires (state machine + outbox)
 
 ```
@@ -224,8 +251,9 @@ PROJECT_ID=<your-project> ./deploy/gcp/03-deploy.sh   # Cloud Run + Cloud Schedu
 
 ## Production gaps (what I'd add next)
 
-- **Real network connectivity.** Connect to FedACH through FedLine Advantage/Direct and to Fedwire through
-  FedLine Direct, implementing the `FedAchGateway` and `FedwireGateway` interfaces. Add MQ for the
+- **Real network connectivity.** Finish `FedLineAchGateway` with the bank's FedLine onboarding (file naming
+  and the real acknowledgement format), and add a FedLine Direct implementation of `FedwireGateway` for
+  wires. Add MQ for the
   mainframe, for example IBM MQ with a strangler-fig adapter that forwards COBOL-originated files and
   messages.
 - **ACH returns and NOCs.** Process the R01–R85 return codes and COR entries from FedACH, the return
