@@ -5,10 +5,12 @@ import java.time.LocalDate;
 import java.util.UUID;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Component;
 
 /** Stands in for FedACH: validates the file exactly as the operator would, then acknowledges it. */
 @Component
+@ConditionalOnProperty(name = "paysettle.fedline.enabled", havingValue = "false", matchIfMissing = true)
 public class SimulatedFedAchGateway implements FedAchGateway {
 
     private static final Logger log = LoggerFactory.getLogger(SimulatedFedAchGateway.class);

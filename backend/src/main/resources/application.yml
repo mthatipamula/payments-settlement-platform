@@ -73,6 +73,18 @@ paysettle:
   settlement:
     sweep-enabled: ${SETTLEMENT_SWEEP_ENABLED:true}
     sweep-interval-ms: 5000
+  fedline:
+    # FedACH over FedLine Direct. Off by default: the simulated FedACH gateway is used instead.
+    # When on, origination files are written to outbound-dir for the bank's managed file transfer
+    # (e.g. IBM Sterling Connect:Direct) to send to the Fed, and the Fed's acknowledgements are read from
+    # ack-dir. Batches settle only after an ACCEPTED acknowledgement. Needs persistent shared directories,
+    # so run on-premises or on GKE with a mounted volume rather than on Cloud Run.
+    enabled: ${FEDLINE_ENABLED:false}
+    outbound-dir: ${FEDLINE_OUTBOUND_DIR:}
+    ack-dir: ${FEDLINE_ACK_DIR:}
+    archive-dir: ${FEDLINE_ARCHIVE_DIR:}
+    ack-poll-interval-ms: 30000
+    ack-timeout-minutes: 30          # warn when the Fed has not acknowledged a file within this time
   simulator:
     # Local demo traffic generator endpoint (/api/v1/simulator/**). Never enable in production.
     enabled: ${SIMULATOR_ENABLED:false}

@@ -7,7 +7,7 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
 
 @ConfigurationProperties(prefix = "paysettle")
 public record PaySettleProperties(Institution institution, Security security, Crypto crypto, Ach ach, Wire wire,
-                                  Fraud fraud, Settlement settlement, Simulator simulator) {
+                                  Fraud fraud, Settlement settlement, Simulator simulator, FedLine fedline) {
 
     public record Institution(String name, String routingNumber, String fedAchRouting) {
     }
@@ -41,5 +41,12 @@ public record PaySettleProperties(Institution institution, Security security, Cr
     }
 
     public record Simulator(boolean enabled) {
+    }
+    /**
+     * FedLine Direct file exchange. The bank's managed file transfer (e.g. IBM Sterling Connect:Direct) sends
+     * whatever lands in outboundDir to FedACH and drops the Fed's acknowledgements into ackDir.
+     */
+    public record FedLine(boolean enabled, String outboundDir, String ackDir, String archiveDir, long ackPollIntervalMs,
+                          int ackTimeoutMinutes) {
     }
 }

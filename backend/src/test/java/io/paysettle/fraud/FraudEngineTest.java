@@ -17,7 +17,7 @@ class FraudEngineTest {
                 new PaySettleProperties.Ach("America/New_York", 100_000_000, List.of()),
                 new PaySettleProperties.Wire("America/New_York", LocalTime.of(18, 0), 30),
                 new PaySettleProperties.Fraud(50, 85, 2_500_000, new BigDecimal("250000.00"), 60, 20, 5, 0.92),
-                null, null);
+                null, null, null);
     }
 
     private final FraudEngine engine = new FraudEngine(props());
