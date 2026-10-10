@@ -297,3 +297,221 @@ frontend/   React operations console
 samples/    Sample NACHA file and pacs.008 / pacs.002 messages
 deploy/gcp/ Setup, build, deploy, status, pause/resume and teardown scripts
 ```
+## Worked example: one ACH payment from customer to the Fed
+
+One $1,250.00 payroll credit, followed through the whole flow.
+
+| Party | Value |
+|---|---|
+| Customer (originator) | Acme Manufacturing, company ID `1412345678` |
+| Employee (receiver) | Jane Doe, account at JPMorgan Chase (routing `021000021`) |
+| Our bank (ODFI) | routing `123456780` (a valid-checksum test number) |
+| Federal Reserve (FedACH) | routing `011000015` (example) |
+
+Every NACHA record is exactly 94 characters. Trailing spaces may not show on screen.
+
+### 1. File the customer sends to the bank (NACHA)
+
+```
+101 12345678014123456782610091430A094101PAYSETTLE BANK         ACME MANUFACTURING INC
+5220ACME MFG                            1412345678PPDPAYROLL         261013   1123456780000001
+622021000021123456789        0000125000EMP0042        JANE DOE                0123456780000001
+822000000100021000020000000000000000001250001412345678                         123456780000001
+9000001000001000000010002100002000000000000000000125000
+```
+
+| Record | Key fields |
+|---|---|
+| **1** File header | Destination ` 123456780` = our bank. Origin `1412345678` = Acme's company ID ("1" + EIN). Created 2026-10-09 14:30, File ID Modifier `A` |
+| **5** Batch header | Service class `220` = credits only. SEC `PPD` = consumer payroll. Effective date `261013` (Tue, Oct 13; Mon, Oct 12 is Columbus Day, a Fed holiday). Settlement date (positions 76–78) is blank; the Fed fills it in. Originating bank = `12345678` |
+| **6** Entry | Code `22` = checking credit. Receiving bank `02100002` + check digit `1`. Account `123456789`. Amount `0000125000` = $1,250.00. Trace `123456780000001` |
+| **8** Batch control | 1 entry. Entry hash `0002100002` = sum of the receiving banks' 8-digit routing numbers. Credits $1,250.00 |
+| **9** File control | Batch, block and entry counts, entry hash and totals. The file is then padded with lines of `9`s to a multiple of 10 records |
+
+### 2. What the bank does before sending it on
+
+1. **Validates the whole file:** control totals, entry hash, routing check digits, record format.
+2. **Checks each entry:** duplicates, fraud scoring, sanctions, customer exposure limits, Same Day eligibility.
+3. **Combines the entries that passed** with those from all other customers' files for the same FedACH window, and builds a new file.
+
+### 3. File the bank sends to the Fed over FedLine (NACHA)
+
+```
+101 011000015 1234567802610091505C094101FEDERAL RESERVE BANK   PAYSETTLE BANK
+5220ACME MFG                            1412345678PPDPAYROLL         261013   1123456780000037
+622021000021123456789        0000125000EMP0042        JANE DOE                0123456780004812
+822000000100021000020000000000000000001250001412345678                         123456780000037
+9000001000001000000010002100002000000000000000000125000
+```
+
+What changed from the customer's file:
+
+| Field | Customer → bank | Bank → Fed |
+|---|---|---|
+| Immediate destination | ` 123456780` (our bank) | ` 011000015` (the Fed) |
+| Immediate origin | `1412345678` (Acme) | ` 123456780` (our bank's routing number) |
+| Names | PAYSETTLE BANK / ACME MANUFACTURING INC | FEDERAL RESERVE BANK / PAYSETTLE BANK |
+| Creation time, File ID Modifier | 14:30, `A` | 15:05, `C` (the bank's 3rd file to the Fed today) |
+| Batch number | `0000001` | `0000037` (the bank numbers batches across all customers) |
+| Trace number | `123456780000001` | `123456780004812` (assigned by the bank to be unique; the first 8 digits are always the originating bank's routing number) |
+| File control | 1 batch | Totals for all customers' batches in the file (only one shown here) |
+
+**What stays the same:** the company ID, SEC code, effective date, the employee's bank and account, the amount and the transaction code. The payment itself never changes, only how it's packaged and who it's from.
+
+The bank's managed file transfer software sends this file to the Fed over FedLine Direct, using the bank's Fed-issued certificates. In this project, `FedLineAchGateway` hands the file to that software (see [FedACH connectivity](#fedach-connectivity-fedline)).
+
+### 4. The Fed's acknowledgement (illustrative, not NACHA)
+
+The Fed confirms that it received and accepted the file, or rejected it. The exact layout is defined in the Fed's FedACH specifications, which banks receive during FedLine onboarding. **This is an illustrative layout, not the real one:**
+
+```
+FEDACH FILE ACKNOWLEDGEMENT
+SENDING DFI ......... 123456780  PAYSETTLE BANK
+FILE CREATED ........ 2026-10-09 15:05   FILE ID MODIFIER: C
+RECEIVED ............ 2026-10-09 15:06:12 ET
+STATUS .............. ACCEPTED
+BATCHES ............. 000001
+ENTRIES/ADDENDA ..... 00000001
+ENTRY HASH .......... 0002100002
+TOTAL DEBITS ........ $0.00
+TOTAL CREDITS ....... $1,250.00
+```
+
+The acknowledgement echoes the file's identity and control totals: sender, creation date and time, File ID Modifier, counts, entry hash and totals. The bank matches these against what it sent. A rejection gives the reason, for example a duplicate file or a control total mismatch.
+
+### 5. What Chase receives from the Fed (NACHA again)
+
+The Fed sorts entries by receiving bank and fills in the settlement date as a 3-digit day of the year:
+
+```
+5220ACME MFG                            1412345678PPDPAYROLL         261013286   1123456780000037
+```
+
+`286` is October 13, 2026. On that day the Fed credits Chase's Fed account and debits ours, and Chase posts $1,250.00 to Jane Doe's account.
+
+## Worked example: one domestic wire over Fedwire Funds
+
+Wires are different from ACH in three ways:
+- **One payment per message**, not batches in a file.
+- **Real-time gross settlement:** each wire settles individually, in seconds, and is final once settled.
+- **ISO 20022 XML** instead of 94-character records. Fedwire Funds moved to ISO 20022 in March 2025.
+
+| Party | Value |
+|---|---|
+| Customer (debtor) | Acme Manufacturing, account `4401229871` at our bank |
+| Our bank | routing (ABA) `123456780` (a valid-checksum test number) |
+| Beneficiary (creditor) | Blue Ridge Supply Co, account `7730015512` at JPMorgan Chase (ABA `021000021`) |
+| Amount | $18,250.00 |
+
+The XML below is trimmed to the important elements. The exact Fedwire field rules are in the Fedwire ISO 20022 implementation guide, which banks get during onboarding.
+
+### 1. What the customer sends the bank
+
+Corporate customers usually send an ISO 20022 **pain.001** (customer credit transfer initiation) over host-to-host, or enter the wire in online banking. Simplified:
+
+```xml
+<Document xmlns="urn:iso:std:iso:20022:tech:xsd:pain.001.001.09">
+  <CstmrCdtTrfInitn>
+    <GrpHdr><MsgId>ACME-20261009-0042</MsgId><CreDtTm>2026-10-09T10:14:00-04:00</CreDtTm>
+      <NbOfTxs>1</NbOfTxs><InitgPty><Nm>Acme Manufacturing Inc</Nm></InitgPty></GrpHdr>
+    <PmtInf>
+      <PmtInfId>ACME-PAY-0042</PmtInfId><PmtMtd>TRF</PmtMtd><ReqdExctnDt><Dt>2026-10-09</Dt></ReqdExctnDt>
+      <Dbtr><Nm>Acme Manufacturing Inc</Nm></Dbtr>
+      <DbtrAcct><Id><Othr><Id>4401229871</Id></Othr></Id></DbtrAcct>
+      <DbtrAgt><FinInstnId><ClrSysMmbId><ClrSysId><Cd>USABA</Cd></ClrSysId><MmbId>123456780</MmbId></ClrSysMmbId></FinInstnId></DbtrAgt>
+      <CdtTrfTxInf>
+        <PmtId><EndToEndId>INV-88231</EndToEndId></PmtId>
+        <Amt><InstdAmt Ccy="USD">18250.00</InstdAmt></Amt>
+        <CdtrAgt><FinInstnId><ClrSysMmbId><ClrSysId><Cd>USABA</Cd></ClrSysId><MmbId>021000021</MmbId></ClrSysMmbId></FinInstnId></CdtrAgt>
+        <Cdtr><Nm>Blue Ridge Supply Co</Nm></Cdtr>
+        <CdtrAcct><Id><Othr><Id>7730015512</Id></Othr></Id></CdtrAcct>
+        <RmtInf><Ustrd>Invoice 88231</Ustrd></RmtInf>
+      </CdtTrfTxInf>
+    </PmtInf>
+  </CstmrCdtTrfInitn>
+</Document>
+```
+
+In this project the customer's request comes in as JSON on `POST /api/v1/wires` (with an `Idempotency-Key` header), or as a ready-made pacs.008 on `POST /api/v1/wires/iso20022`.
+
+### 2. What the bank does before sending it on
+
+1. **Validates:** routing numbers, amount, USD only, value date, Fedwire cutoff (18:00 ET for customer transfers).
+2. **Checks for duplicates:** `Idempotency-Key` replay, UETR reuse, same debtor, creditor and amount within 30 minutes.
+3. **Screens and scores:** sanctions screening of names (OFAC), and fraud scoring (amount, new beneficiary, velocity, outside business hours).
+4. **Checks the money:** the customer's available balance and limits, then debits or reserves funds.
+5. **Builds the pacs.008 and sends it.** Holds wait for an analyst (fraud or sanctions) or an operator (possible duplicate). A wire can't be recalled after it settles, so every check happens before release.
+
+### 3. What the bank sends to Fedwire (pacs.008, over FedLine)
+
+Changes from the customer's instruction: a **UETR** (unique end-to-end reference) is added, the bank becomes the **instructing agent**, Fedwire is the clearing system, and the settlement date and charge bearer are set. Simplified, without the business application header (head.001) that wraps every Fedwire message:
+
+```xml
+<Document xmlns="urn:iso:std:iso:20022:tech:xsd:pacs.008.001.08">
+  <FIToFICstmrCdtTrf>
+    <GrpHdr>
+      <MsgId>20261009PSB1FT01000317</MsgId>
+      <CreDtTm>2026-10-09T10:15:03-04:00</CreDtTm>
+      <NbOfTxs>1</NbOfTxs>
+      <SttlmInf><SttlmMtd>CLRG</SttlmMtd><ClrSys><Cd>FDW</Cd></ClrSys></SttlmInf>
+    </GrpHdr>
+    <CdtTrfTxInf>
+      <PmtId>
+        <InstrId>20261009PSB1FT01000317</InstrId>
+        <EndToEndId>INV-88231</EndToEndId>
+        <UETR>8a562c67-ca16-48ba-b074-65581be6f001</UETR>
+      </PmtId>
+      <PmtTpInf><LclInstrm><Prtry>CTRC</Prtry></LclInstrm></PmtTpInf>   <!-- Fedwire: customer transfer -->
+      <IntrBkSttlmAmt Ccy="USD">18250.00</IntrBkSttlmAmt>
+      <IntrBkSttlmDt>2026-10-09</IntrBkSttlmDt>
+      <ChrgBr>SLEV</ChrgBr>
+      <InstgAgt><FinInstnId><ClrSysMmbId><ClrSysId><Cd>USABA</Cd></ClrSysId><MmbId>123456780</MmbId></ClrSysMmbId></FinInstnId></InstgAgt>
+      <InstdAgt><FinInstnId><ClrSysMmbId><ClrSysId><Cd>USABA</Cd></ClrSysId><MmbId>021000021</MmbId></ClrSysMmbId></FinInstnId></InstdAgt>
+      <Dbtr><Nm>Acme Manufacturing Inc</Nm></Dbtr>
+      <DbtrAcct><Id><Othr><Id>4401229871</Id></Othr></Id></DbtrAcct>
+      <DbtrAgt><FinInstnId><ClrSysMmbId><ClrSysId><Cd>USABA</Cd></ClrSysId><MmbId>123456780</MmbId></ClrSysMmbId></FinInstnId></DbtrAgt>
+      <CdtrAgt><FinInstnId><ClrSysMmbId><ClrSysId><Cd>USABA</Cd></ClrSysId><MmbId>021000021</MmbId></ClrSysMmbId></FinInstnId></CdtrAgt>
+      <Cdtr><Nm>Blue Ridge Supply Co</Nm></Cdtr>
+      <CdtrAcct><Id><Othr><Id>7730015512</Id></Othr></Id></CdtrAcct>
+      <RmtInf><Ustrd>Invoice 88231</Ustrd></RmtInf>
+    </CdtTrfTxInf>
+  </FIToFICstmrCdtTrf>
+</Document>
+```
+
+| Field | Customer instruction (pain.001) | Bank → Fedwire (pacs.008) |
+|---|---|---|
+| Message type | Customer initiation | Bank-to-bank customer credit transfer |
+| Who is sending | Acme (initiating party) | Our bank (`InstgAgt` = `123456780`) |
+| Who receives the message | Our bank | Chase (`InstdAgt` = `021000021`), through Fedwire (`ClrSys` = `FDW`) |
+| Tracking | Acme's `EndToEndId` | Same `EndToEndId` **plus a UETR** that stays with the payment end to end |
+| Settlement | Requested date | `IntrBkSttlmDt`, settlement method `CLRG`, charge bearer `SLEV` |
+
+**What stays the same:** the debtor and creditor, their accounts and banks, the amount and the remittance information.
+
+### 4. Fedwire's answer (pacs.002)
+
+Fedwire settles the wire immediately by debiting our bank's Fed account and crediting Chase's. It then confirms with a status report. Fedwire also assigns its own references: the **IMAD** (input message accountability data: date + sender ID + sequence) and the **OMAD** (output message accountability data). Where these appear in the message is defined in the Fedwire ISO 20022 implementation guide. Simplified:
+
+```xml
+<Document xmlns="urn:iso:std:iso:20022:tech:xsd:pacs.002.001.10">
+  <FIToFIPmtStsRpt>
+    <GrpHdr><MsgId>FDWSTS20261009000981</MsgId><CreDtTm>2026-10-09T10:15:04-04:00</CreDtTm></GrpHdr>
+    <OrgnlGrpInfAndSts><OrgnlMsgId>20261009PSB1FT01000317</OrgnlMsgId><OrgnlMsgNmId>pacs.008.001.08</OrgnlMsgNmId></OrgnlGrpInfAndSts>
+    <TxInfAndSts>
+      <OrgnlEndToEndId>INV-88231</OrgnlEndToEndId>
+      <OrgnlUETR>8a562c67-ca16-48ba-b074-65581be6f001</OrgnlUETR>
+      <TxSts>ACSC</TxSts>                                  <!-- accepted, settlement completed -->
+      <!-- Rejected instead: <TxSts>RJCT</TxSts><StsRsnInf><Rsn><Cd>AC01</Cd></Rsn></StsRsnInf> (AC01 = incorrect account number) -->
+    </TxInfAndSts>
+  </FIToFIPmtStsRpt>
+</Document>
+```
+
+Unlike ACH, **the acknowledgement is ISO 20022 too**, and it's per payment. `ACSC` means the money has moved and the wire is final. In this project the simulated Fedwire returns exactly this message, with an IMAD such as `20261009PSB1FT01000317`. Account numbers ending `0000` produce an `AC01` reject, and amounts ending `.13` produce `AM04` (insufficient funds).
+
+### 5. What Chase receives
+
+Chase receives the same pacs.008 from Fedwire, with the Fed's references attached, and credits Blue Ridge Supply's account. The UETR lets all three banks and both customers trace the one payment.
+
+**Interview summary:** "ACH is batched files that settle at set windows and can be returned. Fedwire is one ISO 20022 message per payment that settles immediately and is final. So every check (duplicates, sanctions, fraud, funds) happens before release, and the UETR ties the payment together end to end."
