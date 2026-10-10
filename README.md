@@ -387,6 +387,27 @@ The Fed sorts entries by receiving bank and fills in the settlement date as a 3-
 5220ACME MFG                            1412345678PPDPAYROLL         261013286   1123456780000037
 ```
 
+101 021000021 0110000152610121800A094101JPMORGAN CHASE BANK    FEDERAL RESERVE BANK
+5220ACME MFG                            1412345678PPDPAYROLL         261013286   1123456780000037
+622021000021123456789        0000125000EMP0042        JANE DOE                0123456780004812
+822000000100021000020000000000000000001250001412345678                         123456780000037
+9000001000001000000010002100002000000000000000000125000
+
+**The line Chase uses to credit Jane is the 6 record:**
+
+6 22 02100002 1 123456789         0000125000 EMP0042         JANE DOE               00 0 123456780004812
+│ │  │        │ │                 │          │               │                      │  │ └ Trace number (from PaySettle)
+│ │  │        │ │                 │          │               │                      │  └ Addenda indicator (0 = none)
+│ │  │        │ │                 │          │               │                      └ Discretionary data
+│ │  │        │ │                 │          │               └ Receiver name (22)
+│ │  │        │ │                 │          └ Individual ID (15), e.g. employee number
+│ │  │        │ │                 └ Amount (10), $1,250.00
+│ │  │        │ └ Jane's account number at Chase (17)  ◀── this one
+│ │  │        └ Check digit
+│ │  └ Receiving bank routing (8): Chase
+│ └ Transaction code 22 = credit to a checking account
+└ Record type 6 = entry
+
 `286` is October 13, 2026. On that day the Fed credits Chase's Fed account and debits ours, and Chase posts $1,250.00 to Jane Doe's account.
 
 ## Worked example: one domestic wire over Fedwire Funds
