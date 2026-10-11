@@ -175,13 +175,16 @@ by status, fraud action or duplicate kind.
 Prerequisites: Java 21, Node 20+ and Docker.
 
 ```bash
-docker compose up -d                                   # Postgres 16 on port 5435
-SIMULATOR_ENABLED=true ./gradlew :backend:bootRun      # API on http://localhost:8080
+./scripts/dev.sh          # Postgres on 5435, API on http://localhost:8080, console on http://localhost:5174
+./scripts/dev.sh status   # what is running
+./scripts/dev.sh stop     # stop the API and console (docker compose down stops Postgres)
 ```
 
-```bash
-cd frontend && npm install && npm run dev               # console on http://localhost:5174
-```
+The script builds the backend first and turns on the demo traffic generator. Set `SKIP_BUILD=true` to start
+the last build, or `SIMULATOR_ENABLED=false` to turn the generator off. Logs are in `.run/`.
+
+For a steady stream of demo traffic (so the hourly charts fill in), run `./scripts/traffic.sh`. It does a
+round every 2 minutes until Ctrl+C; set `ROUNDS` and `INTERVAL` to change that.
 
 Sign in with API key `local-operator-key` (operator) or `local-analyst-key` (fraud analyst).
 
